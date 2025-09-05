@@ -1,0 +1,143 @@
+name: Release Build and Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 전체 히스토리를 가져와서 이전 태그부터의 커밋 로그를 생성
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Restore dependencies
+      run: dotnet restore SignalRServer/SignalRServer.csproj
+    
+    - name: Build
+      run: dotnet build SignalRServer/SignalRServer.csproj --configuration Release --no-restore
+    
+    - name: Publish
+      run: dotnet publish SignalRServer/SignalRServer.csproj --configuration Release --no-build --output ./publish
+    
+    - name: Generate Changelog
+      id: changelog
+      shell: pwsh
+      run: |
+        Write-Host "=== Changelog 생성 시작 ==="
+        Write-Host "현재 태그: ${{ github.ref_name }}"
+
+        # 직전 태그 탐지: 현재 태그의 직전 태그를 정확히 찾기
+        $previousTag = ""
+        try {
+          $previousTag = git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>$null
+        } catch {}
+
+        if (-not $previousTag) {
+          Write-Host "이전 태그를 찾을 수 없습니다. 첫 릴리즈로 간주합니다."
+          $range = "${{ github.ref_name }}"
+        } else {
+          Write-Host "이전 태그: $previousTag"
+          $range = "$previousTag..${{ github.ref_name }}"
+        }
+
+        # 형식: "변경 내용 (yyyy-MM-dd HH:mm:ss) - 아이디"
+        $log = git --no-pager log $range --pretty=format:"%s (%ad) - %an" --date=format:"%Y-%m-%d %H:%M:%S"
+        if ([string]::IsNullOrWhiteSpace($log)) {
+          $log = "변경사항이 없습니다."
+        }
+
+        # 멀티라인 Output 기록
+        $delim = [guid]::NewGuid().ToString()
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "changelog<<$delim"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value $log
+        Add-Content -Path $env:GITHUB_OUTPUT -Value $delim
+
+        Write-Host "=== 최종 Changelog ==="
+        Write-Host $log
+        Write-Host "=== Changelog 생성 완료 ==="
+    
+    - name: Generate KST Time
+      id: kst_time
+      run: |
+        # UTC 시간을 한국 시간(KST)으로 변환
+        $utcTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+        $kstTime = (Get-Date).AddHours(9).ToString("yyyy-MM-dd HH:mm:ss")
+        
+        Write-Host "=== 시간 변환 ==="
+        Write-Host "UTC 시간: $utcTime"
+        Write-Host "한국 시간: $kstTime"
+        
+        # GitHub Actions output에 저장
+        echo "kst_time=$kstTime" >> $env:GITHUB_OUTPUT
+        
+        Write-Host "=== 시간 변환 완료 ==="
+    
+    - name: Verify Changelog
+      run: |
+        Write-Host "=== Changelog 검증 ==="
+        Write-Host "생성된 changelog 내용:"
+        echo "${{ steps.changelog.outputs.changelog }}"
+        Write-Host "Changelog 길이: $('${{ steps.changelog.outputs.changelog }}'.Length)"
+        Write-Host "=== Changelog 검증 완료 ==="
+    
+    - name: Verify KST Time
+      run: |
+        Write-Host "=== 한국 시간 검증 ==="
+        Write-Host "생성된 한국 시간: ${{ steps.kst_time.outputs.kst_time }}"
+        Write-Host "=== 한국 시간 검증 완료 ==="
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        body: |
+          ## 변경사항
+          
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## 빌드 정보
+          
+          - .NET 버전: 9.0
+          - 플랫폼: Windows
+          - 빌드 시간: ${{ steps.kst_time.outputs.kst_time }}
+        draft: false
+        prerelease: false
+    
+    - name: Verify Release Content
+      run: |
+        Write-Host "=== 릴리즈 내용 검증 ==="
+        Write-Host "릴리즈에 포함된 changelog:"
+        echo "${{ steps.changelog.outputs.changelog }}"
+        Write-Host "=== 릴리즈 내용 검증 완료 ==="
+    
+    - name: Create ZIP Archive
+      run: |
+        Compress-Archive -Path ./publish/* -DestinationPath ./SignalRServer-${{ github.ref_name }}.zip
+    
+    - name: Upload ZIP Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./SignalRServer-${{ github.ref_name }}.zip
+        asset_name: SignalRServer-${{ github.ref_name }}.zip
+        asset_content_type: application/zip
