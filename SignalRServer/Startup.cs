@@ -17,7 +17,7 @@ namespace SignalRServer
         {
             services.AddSignalR(options =>
             {
-                options.MaximumReceiveMessageSize = 2 * 1024 * 1024; // 2MB
+                options.MaximumReceiveMessageSize = 10 * 1024 * 1024; // 10MB
             })
             .AddMessagePackProtocol();  
         }

@@ -131,8 +131,7 @@ namespace SignalRServer
                     var hubContext = _host.Services.GetRequiredService<IHubContext<MsgHub>>();
 
                     await hubContext.Clients.All.SendAsync("ReceiveMessage",
-                        await TypelessMessageHelper.SerializeAsync(
-                            new TypelessMessage() { To = "첫번째 플레이어", Command = "Update", Data = MessageTextBox.Text }));
+                        new SignalRMessage() { From="Server", To="Others", Command = "Update", Data = MessageTextBox.Text });
                     
                     LogMessage($"서버에서 전체 메시지 전송: {MessageTextBox.Text}");
                     
@@ -213,21 +212,22 @@ namespace SignalRServer
             
             _mainWindow?.LogMessage($"클라이언트 연결 해제됨: {clientId}");
             _mainWindow?.UpdateConnectedClients(ConnectedClients);
-            
-            await Clients.All.SendAsync("ReceiveMessage", 
-                await TypelessMessageHelper.SerializeAsync(
-                            new TypelessMessage()
-                            {
-                                To = "서버",
-                                Command = "Message",
-                                DataType = typeof(StateMessage).Name,
-                                Data = new StateMessage()
-                                {
-                                    Who = clientId,
-                                    State = "Disconnected",
-                                    Description = "클라이언트 연결 해제"
-                                }
-                            }));
+
+            await Clients.All.SendAsync("ReceiveMessage",
+                new SignalRMessage()
+                {
+                    From = "Server",
+                    To = "Others",
+                    Command = "Message",
+                    DataType = "StateMessage",
+                    Data = new StateMessage()
+                    {
+                        Who = clientId,
+                        State = "Disconnected",
+                        Description = "클라이언트 연결 해제"
+                    }
+                });
+                
             await base.OnDisconnectedAsync(exception);
         }
 
