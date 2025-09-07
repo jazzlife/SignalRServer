@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using System.Security.Policy;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -19,7 +20,7 @@ namespace SignalRServer
         {
             InitializeComponent();
             _dispatcher = Dispatcher;
-            ChatHub.SetMainWindow(this);
+            MsgHub.SetMainWindow(this);
             _ = Start();
             LogMessage("SignalR 서버 애플리케이션이 시작되었습니다.");
         }
@@ -33,19 +34,29 @@ namespace SignalRServer
         {
             try
             {
+                string _hubPath = HubPath.Text;
+                if (string.IsNullOrEmpty(_hubPath))
+                {
+                    MessageBox.Show("메시지 경로를 설정해주세요.", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
                 if (!int.TryParse(PortTextBox.Text, out int port))
                 {
                     MessageBox.Show("올바른 포트 번호를 입력하세요.", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
 
-                await StartServer(port);
+                var args = new[] { $"--hubPath={_hubPath}", $"--urls=http://*:{port}" };
+
+                await StartServer(args);
 
                 ServerStatusText.Text = "실행 중";
                 ServerStatusText.Foreground = System.Windows.Media.Brushes.Green;
                 StartServerButton.IsEnabled = false;
                 StopServerButton.IsEnabled = true;
                 PortTextBox.IsEnabled = false;
+                HubPath.IsEnabled = false;
 
                 LogMessage($"SignalR 서버가 포트 {port}에서 시작되었습니다.");
             }
@@ -67,6 +78,7 @@ namespace SignalRServer
                 StartServerButton.IsEnabled = true;
                 StopServerButton.IsEnabled = false;
                 PortTextBox.IsEnabled = true;
+                HubPath.IsEnabled = true;
                 
                 LogMessage("SignalR 서버가 중지되었습니다.");
             }
@@ -77,12 +89,11 @@ namespace SignalRServer
             }
         }
 
-        private async Task StartServer(int port)
+        private async Task StartServer(string[] args)
         {
-            _host = Host.CreateDefaultBuilder()
+            _host = Host.CreateDefaultBuilder(args)
                 .ConfigureWebHostDefaults(webBuilder =>
                 {
-                    webBuilder.UseUrls($"http://localhost:{port}");
                     webBuilder.UseStartup<Startup>();
                 })
                 .ConfigureLogging(logging =>
@@ -117,7 +128,7 @@ namespace SignalRServer
             {
                 if (_host != null)
                 {
-                    var hubContext = _host.Services.GetRequiredService<IHubContext<ChatHub>>();
+                    var hubContext = _host.Services.GetRequiredService<IHubContext<MsgHub>>();
 
                     await hubContext.Clients.All.SendAsync("ReceiveMessage",
                         await TypelessMessageHelper.SerializeAsync(
@@ -173,7 +184,7 @@ namespace SignalRServer
         }
     }
 
-    public class ChatHub : Hub
+    public class MsgHub : Hub
     {
         private static readonly List<string> ConnectedClients = new();
         private static MainWindow? _mainWindow;
@@ -220,19 +231,6 @@ namespace SignalRServer
             await base.OnDisconnectedAsync(exception);
         }
 
-        public async Task SendMessage(string user, string message)
-        {
-            _mainWindow?.LogMessage($"메시지 수신: {user} - {message}");
-
-            //await Clients.Users(user).SendAsync("ReceiveMessage", 
-            //    await TypelessMessageHelper.GenerateMessage(
-            //                new TypelessMessage() { To = user, Command = "Message", Data = message }));
-
-            await Clients.AllExcept(new List<string>() { Context.ConnectionId }).SendAsync("ReceiveMessage", 
-                await TypelessMessageHelper.SerializeAsync(
-                            new TypelessMessage() { To = user, Command = "Message", Data = message }));
-        }
-
         public async Task JoinGroup(string groupName)
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
@@ -240,20 +238,8 @@ namespace SignalRServer
             //await Clients.Group(groupName).SendAsync("ReceiveMessage", "시스템", $"{Context.ConnectionId}가 그룹에 참가했습니다.");
         }
 
-        public async Task SendToGroup(string groupName, string user, string message)
-        {
-            _mainWindow?.LogMessage($"그룹 메시지: {groupName} - {user} - {message}");
-
-            //await Clients.Group(groupName).SendAsync("ReceiveMessage", user, message);
-
-            await Clients.GroupExcept(groupName, new List<string>() { Context.ConnectionId }).SendAsync("ReceiveMessage",
-                await TypelessMessageHelper.SerializeAsync(
-                            new TypelessMessage() { To = user, Command = "Message", Data = message }));
-
-        }
-
         // Hyunmu.Service 클라이언트 호환성을 위한 추가 메서드들
-        
+
         /// <summary>
         /// 하트비트 응답 - 연결 상태 확인
         /// </summary>
@@ -299,34 +285,6 @@ namespace SignalRServer
         }
 
         /// <summary>
-        /// 대량 메시지 브로드캐스트
-        /// </summary>
-        public async Task<bool> BroadcastBulkMessages(object[] messages)
-        {
-            _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 요청 수신: {Context.ConnectionId}, 메시지 수: {messages.Length}");
-            
-            try
-            {
-                foreach (var message in messages)
-                {
-                    //await Clients.All.SendAsync("ReceiveMessage", "시스템", $"대량 메시지: {message}");
-
-                    await Clients.AllExcept(new List<string>() { Context.ConnectionId }).SendAsync("ReceiveMessage",
-                        await TypelessMessageHelper.SerializeAsync(
-                                    new TypelessMessage() { Command = "Message", Data = message }));
-                }
-                
-                _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 완료: {messages.Length}개 메시지 전송");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 실패: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
         /// 그룹에서 나가기
         /// </summary>
         public async Task LeaveGroup(string groupName)
@@ -335,5 +293,164 @@ namespace SignalRServer
             _mainWindow?.LogMessage($"클라이언트 {Context.ConnectionId}가 그룹 {groupName}에서 나갔습니다.");
             //await Clients.Group(groupName).SendAsync("ReceiveMessage", "시스템", $"{Context.ConnectionId}가 그룹에서 나갔습니다.");
         }
+
+
+        #region 메시지 중계
+        public async Task<bool> SendMessageByClientProxy(ISingleClientProxy client, object message)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"메시지 전송 요청");
+
+                await client.SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"메시지 전송 완료");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"메시지 전송 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendMessagesByClientProxy(ISingleClientProxy client, object[] messages)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"대량메시지 전송 요청");
+
+                foreach (var message in messages)
+                    await client.SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"대량메시지 전송 완료");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"대량메시지 전송 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendMessage(string to_connection_id, object message)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"메시지 전송 요청: {to_connection_id}");
+
+                await Clients.Client(to_connection_id).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"메시지 전송 완료: {to_connection_id}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"메시지 전송 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendMessages(string to_connection_id, object[] messages)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"대량메시지 전송 요청: {to_connection_id}");
+
+                foreach (var message in messages)
+                    await Clients.Client(to_connection_id).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"대량메시지 전송 완료: {to_connection_id}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"대량메시지 전송 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendMessageToGroup(string groupName, object message)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"그룹 메시지 요청: {groupName}");
+                    
+                await Clients.GroupExcept(groupName, Context.ConnectionId).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"그룹 메시지 전송 완료: {groupName}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"그룹 메시지 전송 실패: {ex.Message}");
+            }
+
+            return true;
+        }
+
+        public async Task<bool> SendMessagesToGroup(string groupName, object[] messages)
+        {
+            try
+            {
+                _mainWindow?.LogMessage($"그룹 대량메시지 전송 요청: {groupName}");
+
+                foreach (var message in messages)
+                    await Clients.GroupExcept(groupName, Context.ConnectionId).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"그룹 대량메시지 전송 완료: {groupName}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"그룹 대량메시지 전송 실패: {ex.Message}");
+            }
+
+            return true;
+        }
+
+        public async Task<bool> SendMessageToAll(object message)
+        {
+            _mainWindow?.LogMessage($"메시지 브로드캐스트 요청: {Context.ConnectionId}");
+
+            try
+            {
+                await Clients.AllExcept(Context.ConnectionId).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"메시지 브로드캐스트 완료: {Context.ConnectionId}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"메시지 브로드캐스트 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendMessagesToAll(object[] messages)
+        {
+            _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 요청: {Context.ConnectionId}, 메시지 수: {messages.Length}");
+
+            try
+            {
+                foreach (var message in messages)
+                    await Clients.AllExcept(Context.ConnectionId).SendAsync("ReceiveMessage", message);
+
+                _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 완료: {messages.Length}개 메시지 전송");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _mainWindow?.LogMessage($"대량 메시지 브로드캐스트 실패: {ex.Message}");
+            }
+
+            return false;
+        }
+        #endregion
     }
 } 
