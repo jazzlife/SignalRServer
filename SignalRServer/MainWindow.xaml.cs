@@ -24,8 +24,92 @@ namespace SignalRServer
             InitializeComponent();
             _dispatcher = Dispatcher;
             MsgHub.SetMainWindow(this);
+            ApplyStartupParameters(Environment.GetCommandLineArgs());
             _ = Start();
             LogMessage("SignalR 서버 애플리케이션이 시작되었습니다.");
+        }
+
+        private void ApplyStartupParameters(string[] args)
+        {
+            var hubPath = GetArgumentValue(args, "--hubPath");
+            if (!string.IsNullOrWhiteSpace(hubPath))
+            {
+                HubPath.Text = hubPath.StartsWith('/') ? hubPath : $"/{hubPath}";
+            }
+
+            var portValue = GetArgumentValue(args, "--port");
+            if (!string.IsNullOrWhiteSpace(portValue) &&
+                int.TryParse(portValue, out var parsedPort) &&
+                parsedPort > 0 &&
+                parsedPort <= 65535)
+            {
+                PortTextBox.Text = parsedPort.ToString();
+            }
+
+            var urlsValue = GetArgumentValue(args, "--urls");
+            var portFromUrls = ExtractPortFromUrls(urlsValue);
+            if (portFromUrls.HasValue)
+            {
+                PortTextBox.Text = portFromUrls.Value.ToString();
+            }
+        }
+
+        private static string? GetArgumentValue(string[] args, string key)
+        {
+            for (var i = 0; i < args.Length; i++)
+            {
+                var current = args[i];
+                if (current.StartsWith($"{key}=", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current[(key.Length + 1)..];
+                }
+
+                if (string.Equals(current, key, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    return args[i + 1];
+                }
+            }
+
+            return null;
+        }
+
+        private static int? ExtractPortFromUrls(string? urls)
+        {
+            if (string.IsNullOrWhiteSpace(urls))
+            {
+                return null;
+            }
+
+            var splitUrls = urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var url in splitUrls)
+            {
+                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+                    uri.Port > 0 &&
+                    uri.Port <= 65535)
+                {
+                    return uri.Port;
+                }
+
+                var colonIndex = url.LastIndexOf(':');
+                if (colonIndex < 0 || colonIndex + 1 >= url.Length)
+                {
+                    continue;
+                }
+
+                var portPart = url[(colonIndex + 1)..];
+                var slashIndex = portPart.IndexOf('/');
+                if (slashIndex >= 0)
+                {
+                    portPart = portPart[..slashIndex];
+                }
+
+                if (int.TryParse(portPart, out var port) && port > 0 && port <= 65535)
+                {
+                    return port;
+                }
+            }
+
+            return null;
         }
 
         private void StartServerButton_Click(object sender, RoutedEventArgs e)
