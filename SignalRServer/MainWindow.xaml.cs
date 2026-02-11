@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Security.Policy;
+using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -12,6 +13,8 @@ namespace SignalRServer
 {
     public partial class MainWindow : Window
     {
+        private const int MaxLogLines = 1000;
+
         private IHost? _host;
         private readonly Dispatcher _dispatcher;
         private readonly List<string> _connectedClients = new();
@@ -34,11 +37,17 @@ namespace SignalRServer
         {
             try
             {
-                string _hubPath = HubPath.Text;
+                string _hubPath = HubPath.Text?.Trim() ?? string.Empty;
                 if (string.IsNullOrEmpty(_hubPath))
                 {
                     MessageBox.Show("메시지 경로를 설정해주세요.", "오류", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
+                }
+
+                if (!_hubPath.StartsWith('/'))
+                {
+                    _hubPath = "/" + _hubPath;
+                    HubPath.Text = _hubPath;
                 }
 
                 if (!int.TryParse(PortTextBox.Text, out int port))
@@ -67,20 +76,20 @@ namespace SignalRServer
             }
         }
 
-        private async void StopServerButton_Click(object sender, RoutedEventArgs e)
+        private void StopServerButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                await StopServer();
-                
-                ServerStatusText.Text = "중지됨";
-                ServerStatusText.Foreground = System.Windows.Media.Brushes.Red;
-                StartServerButton.IsEnabled = true;
+                ServerStatusText.Text = "중지 중";
+                ServerStatusText.Foreground = System.Windows.Media.Brushes.DarkOrange;
+                StartServerButton.IsEnabled = false;
                 StopServerButton.IsEnabled = false;
-                PortTextBox.IsEnabled = true;
-                HubPath.IsEnabled = true;
+                PortTextBox.IsEnabled = false;
+                HubPath.IsEnabled = false;
                 
-                LogMessage("SignalR 서버가 중지되었습니다.");
+                LogMessage("SignalR 서버 중지를 요청했습니다.");
+
+                StopServerInBackground(updateUiWhenDone: true);
             }
             catch (Exception ex)
             {
@@ -106,14 +115,52 @@ namespace SignalRServer
             await _host.StartAsync();
         }
 
-        private async Task StopServer()
+        private void StopServerInBackground(bool updateUiWhenDone)
         {
-            if (_host != null)
+            var hostToStop = Interlocked.Exchange(ref _host, null);
+
+            if (hostToStop == null)
             {
-                await _host.StopAsync();
-                _host.Dispose();
-                _host = null;
+                if (updateUiWhenDone)
+                {
+                    SetStoppedUi();
+                }
+
+                return;
             }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await hostToStop.StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"서버 백그라운드 중지 중 오류 발생: {ex.Message}");
+                }
+                finally
+                {
+                    hostToStop.Dispose();
+
+                    if (updateUiWhenDone)
+                    {
+                        _ = _dispatcher.BeginInvoke(new Action(SetStoppedUi));
+                    }
+                }
+            });
+        }
+
+        private void SetStoppedUi()
+        {
+            ServerStatusText.Text = "중지됨";
+            ServerStatusText.Foreground = System.Windows.Media.Brushes.Red;
+            StartServerButton.IsEnabled = true;
+            StopServerButton.IsEnabled = false;
+            PortTextBox.IsEnabled = true;
+            HubPath.IsEnabled = true;
+
+            LogMessage("SignalR 서버가 중지되었습니다.");
         }
 
         public async void SendMessageButton_Click(object sender, RoutedEventArgs e)
@@ -144,19 +191,40 @@ namespace SignalRServer
             }
         }
 
+        private void ClearLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            LogListBox.Items.Clear();
+        }
+
         public void LogMessage(string message)
         {
-            _dispatcher.Invoke(() =>
+            if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            _ = _dispatcher.BeginInvoke(new Action(() =>
             {
                 LogListBox.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
+
+                while (LogListBox.Items.Count > MaxLogLines)
+                {
+                    LogListBox.Items.RemoveAt(0);
+                }
+
                 if (LogListBox.Items.Count > 0)
                     LogListBox.ScrollIntoView(LogListBox.Items[LogListBox.Items.Count - 1]);
-            });
+            }));
         }
 
         public void UpdateConnectedClients(List<string> clients)
         {
-            _dispatcher.Invoke(() =>
+            if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
+            {
+                return;
+            }
+
+            _ = _dispatcher.BeginInvoke(new Action(() =>
             {
                 ConnectedClientsListBox.Items.Clear();
                 foreach (var client in clients)
@@ -173,12 +241,12 @@ namespace SignalRServer
                 {
                     ServerStatusText.Text = $"실행 중 ({clientCount}개 연결)";
                 }
-            });
+            }));
         }
 
-        protected override async void OnClosed(EventArgs e)
+        protected override void OnClosed(EventArgs e)
         {
-            await StopServer();
+            StopServerInBackground(updateUiWhenDone: false);
             base.OnClosed(e);
         }
     }

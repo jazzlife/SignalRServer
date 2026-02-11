@@ -36,7 +36,7 @@ namespace SignalRServer
 
         public void Configure(IApplicationBuilder app)
         {
-            var hubPath = _config["hubPath"] ?? "/dataHub"; // 기본값 /dataHub
+            var hubPath = _config["hubPath"] ?? "/HyOnEx"; // 기본값 /HyOnEx
 
             app.UseRouting();
 
